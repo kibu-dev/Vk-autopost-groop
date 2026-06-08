@@ -1,239 +1,392 @@
+import json
+import traceback
 
+import vk_api
 
-    print(
-        f"Опубликован пост {published_id} от {user_id} (анон: {anonymous})", flush=True
-    )
+from vk_api.bot_longpoll import (
+    VkBotLongPoll,
+    VkBotEventType
+)
 
+from config import (
+    COMMUNITY_TOKEN,
+    GROUP_ID
+)
 
-# ==========================
-# ОБРАБОТКА СООБЩЕНИЙ
-# ==========================
+from database import (
+    init_db,
+    execute,
+    fetchall,
+    fetchone
+)
 
+from keyboards import (
+    main_menu_keyboard,
+    posts_keyboard,
+    confirm_delete_keyboard
+)
 
-def handle_message(user_id, text, payload_str):
-    payload = {}
+from messages import (
+    SUCCESS_PUBLISH,
+    NO_POSTS,
+    DELETE_DENIED,
+    NOT_MEMBER,
+    DELETE_SUCCESS,
+    HELP_TEXT
+)
 
-    if payload_str:
-        try:
-            payload = json.loads(payload_str)
-        except Exception:
-            pass
+from utils import (
+    remove_anonymous_marker
+)
 
-    cmd = payload.get("cmd", "")
-    text_lower = text.strip().lower()
+from anti_spam import (
+    run_antispam,
+    register_post
+)
 
-    if cmd == "my_posts" or text_lower in ["/posts", "📝 мои посты", "мои посты"]:
-        show_my_posts(user_id)
-        return
+from vk_client import (
+    send_message,
+    publish_post,
+    delete_post,
+    is_member
+)
 
-    if cmd == "delete_post":
-        post_id = payload.get("post_id")
-        if post_id:
-            ask_confirm_delete(user_id, post_id)
-        return
+# ====================================
+# ОБРАБОТКА КНОПОК
+# ====================================
 
-    if cmd == "confirm_delete":
-        post_id = payload.get("post_id")
-        if post_id:
-            do_delete_post(user_id, post_id)
-        return
-
-    if cmd == "menu" or text_lower in [
-        "/start",
-        "start",
-        "меню",
-        "🏠 главное меню",
-        "главное меню",
-    ]:
-        send_message(
-            user_id,
-            (
-                "🏠 Главное меню\n\n"
-                "Предложите пост сообществу — "
-                "он будет опубликован автоматически.\n\n"
-                "Добавьте «анонимно» или «#анонимно» "
-                "в текст, чтобы скрыть подпись."
-            ),
-            main_menu_keyboard(),
-        )
-        return
-
-    if cmd == "stats" or text_lower in ["/stats", "📊 статистика", "статистика"]:
-        show_stats(user_id)
-        return
-
-    if cmd == "help" or text_lower in ["/help", "помощь", "❓ помощь", "help"]:
-        send_message(user_id, HELP_TEXT, main_menu_keyboard())
-        return
-
+def show_menu(user_id):
     send_message(
         user_id,
-        (
-            "🤖 Бот работает.\n\n"
-            "Отправьте предложенный пост в сообщество "
-            "или используйте кнопки меню."
-        ),
-        main_menu_keyboard(),
+        "🏠 Главное меню",
+        main_menu_keyboard()
     )
-
 
 def show_my_posts(user_id):
-    posts = get_user_posts(user_id)
+
+    posts = fetchall(
+        """
+        SELECT *
+        FROM posts
+        WHERE user_id=?
+        ORDER BY publish_date DESC
+        """,
+        (user_id,)
+    )
 
     if not posts:
-        send_message(user_id, NO_POSTS, main_menu_keyboard())
-        return
 
-    lines = ["📝 Ваши опубликованные посты:\n"]
+        send_message(
+            user_id,
+            NO_POSTS,
+            main_menu_keyboard()
+        )
 
-    for post in posts:
-        post_id, _, pub_date, is_anon, post_text = post
-
-        short = (post_text or "Без текста")[:50].replace("\n", " ")
-        date_str = pub_date[:10] if pub_date else "—"
-        anon_mark = " 🕵️" if is_anon else ""
-
-        lines.append(f"• [{date_str}]{anon_mark} {short}…")
-
-    send_message(user_id, "\n".join(lines), posts_keyboard(posts))
-
-
-def ask_confirm_delete(user_id, post_id):
-    owner = get_post_owner(post_id)
-
-    if owner != user_id:
-        send_message(user_id, DELETE_DENIED, main_menu_keyboard())
         return
 
     send_message(
         user_id,
-        f"🗑️ Вы уверены, что хотите удалить пост #{post_id}?",
-        confirm_delete_keyboard(post_id),
+        "📝 Ваши публикации:",
+        posts_keyboard(posts)
     )
-
-
-def do_delete_post(user_id, post_id):
-    if not is_member(user_id):
-        send_message(user_id, NOT_MEMBER, main_menu_keyboard())
-        return
-
-    owner = get_post_owner(post_id)
-
-    if owner != user_id:
-        send_message(user_id, DELETE_DENIED, main_menu_keyboard())
-        return
-
-    try:
-        delete_post(post_id)
-    except Exception as e:
-        print(f"Ошибка удаления поста {post_id}: {e}", flush=True)
-        send_message(
-            user_id,
-            "❌ Не удалось удалить пост. Возможно, он уже был удалён.",
-            main_menu_keyboard(),
-        )
-        return
-
-    execute(
-        """
-        INSERT INTO logs(
-            user_id, action, post_id, action_date
-        ) VALUES (?, ?, ?, ?)
-        """,
-        (user_id, "delete", post_id, datetime.now().isoformat()),
-    )
-
-    remove_post_record(post_id)
-
-    send_message(user_id, DELETE_SUCCESS, main_menu_keyboard())
-
-    print(f"Пост {post_id} удалён пользователем {user_id}", flush=True)
-
 
 def show_stats(user_id):
-    posts = get_user_posts(user_id)
-    total = len(posts)
+
+    count = fetchone(
+        """
+        SELECT COUNT(*)
+        FROM posts
+        WHERE user_id=?
+        """,
+        (user_id,)
+    )[0]
+
+    send_message(
+        user_id,
+        f"📊 Опубликовано постов: {count}",
+        main_menu_keyboard()
+    )
+
+# ====================================
+# УДАЛЕНИЕ ПОСТОВ
+# ====================================
+
+def request_delete(user_id, post_id):
 
     row = fetchone(
         """
-        SELECT daily_posts, warning_count, is_blocked, block_until
-        FROM user_limits
-        WHERE user_id = ?
+        SELECT post_id
+        FROM posts
+        WHERE
+            post_id=?
+            AND user_id=?
         """,
-        (user_id,),
+        (
+            post_id,
+            user_id
+        )
     )
 
-    daily = row[0] if row else 0
-    warnings = row[1] if row else 0
-    blocked = row[2] if row else 0
-    block_until = row[3] if row else None
+    if not row:
 
-    block_text = "Нет"
+        send_message(
+            user_id,
+            DELETE_DENIED,
+            main_menu_keyboard()
+        )
 
-    if blocked and block_until:
-        try:
-            until = datetime.fromisoformat(block_until)
-            block_text = f"до {until.strftime('%d.%m.%Y %H:%M')}"
-        except Exception:
-            block_text = "Да"
+        return
 
-    text = (
-        f"📊 Ваша статистика\n\n"
-        f"📝 Постов всего: {total}\n"
-        f"📅 Постов сегодня: {daily}\n"
-        f"⚠️ Предупреждений: {warnings}\n"
-        f"🚫 Блокировка: {block_text}"
+    send_message(
+        user_id,
+        "Подтвердите удаление",
+        confirm_delete_keyboard(post_id)
     )
 
-    send_message(user_id, text, main_menu_keyboard())
+def confirm_delete(user_id, post_id):
 
+    if not is_member(user_id):
 
-# ==========================
-# LONGPOLL — СООБЩЕНИЯ
-# ==========================
+        send_message(
+            user_id,
+            NOT_MEMBER,
+            main_menu_keyboard()
+        )
 
+        return
 
-def run_bot():
+    row = fetchone(
+        """
+        SELECT post_id
+        FROM posts
+        WHERE
+            post_id=?
+            AND user_id=?
+        """,
+        (
+            post_id,
+            user_id
+        )
+    )
+
+    if not row:
+
+        send_message(
+            user_id,
+            DELETE_DENIED,
+            main_menu_keyboard()
+        )
+
+        return
+
+    try:
+
+        delete_post(post_id)
+
+        execute(
+            """
+            DELETE FROM posts
+            WHERE post_id=?
+            """,
+            (post_id,)
+        )
+
+        send_message(
+            user_id,
+            DELETE_SUCCESS,
+            main_menu_keyboard()
+        )
+
+    except Exception as e:
+
+        send_message(
+            user_id,
+            f"Ошибка удаления: {e}",
+            main_menu_keyboard()
+        )
+
+# ====================================
+# ПУБЛИКАЦИЯ
+# ====================================
+
+def handle_post(user_id, text):
+
+    ok, reason = run_antispam(
+        user_id,
+        text
+    )
+
+    if not ok:
+
+        send_message(
+            user_id,
+            f"⛔ {reason}",
+            main_menu_keyboard()
+        )
+
+        return
+
+    cleaned_text, anonymous = (
+        remove_anonymous_marker(text)
+    )
+
+    try:
+
+        post_id = publish_post(
+            text=cleaned_text,
+            anonymous=anonymous
+        )
+
+        execute(
+            """
+            INSERT INTO posts(
+                post_id,
+                user_id,
+                publish_date,
+                is_anonymous,
+                post_text
+        )
+            VALUES(?,?,?,?,?)
+            """,
+            (
+                post_id,
+                user_id,
+                __import__("datetime")
+                .datetime.now()
+                .isoformat(),
+                int(anonymous),
+                cleaned_text
+            )
+        )
+
+        register_post(
+            user_id,
+            cleaned_text
+        )
+
+        send_message(
+            user_id,
+            SUCCESS_PUBLISH,
+            main_menu_keyboard()
+        )
+
+    except Exception as e:
+
+        send_message(
+            user_id,
+            f"Ошибка публикации:\n{e}"
+        )
+
+# ====================================
+# PAYLOAD
+# ====================================
+
+def handle_payload(user_id, payload):
+
+    cmd = payload.get("cmd")
+
+    if cmd == "menu":
+        show_menu(user_id)
+
+    elif cmd == "help":
+
+        send_message(
+            user_id,
+            HELP_TEXT,
+            main_menu_keyboard()
+        )
+
+    elif cmd == "my_posts":
+        show_my_posts(user_id)
+
+    elif cmd == "stats":
+        show_stats(user_id)
+
+    elif cmd == "delete_post":
+
+        request_delete(
+            user_id,
+            payload.get("post_id")
+        )
+
+    elif cmd == "confirm_delete":
+
+        confirm_delete(
+            user_id,
+            payload.get("post_id")
+        )
+
+# ====================================
+# LONGPOLL
+# ====================================
+
+def main():
+
     init_db()
-    print("БД инициализирована", flush=True)
 
-    poller = threading.Thread(target=process_suggestions, daemon=True)
-    poller.start()
-
-    print(
-        f"Поллер предложок запущен (интервал: {SUGGESTION_POLL_INTERVAL}с)", flush=True
+    vk_session = vk_api.VkApi(
+        token=COMMUNITY_TOKEN
     )
 
-    longpoll = VkBotLongPoll(community_session, GROUP_ID)
+    longpoll = VkBotLongPoll(
+        vk_session,
+        GROUP_ID
+    )
 
-    print("LongPoll запущен", flush=True)
+    print("Бот запущен")
 
     for event in longpoll.listen():
+
         try:
-            if event.type != VkBotEventType.MESSAGE_NEW:
+
+            if (
+                event.type
+                != VkBotEventType.MESSAGE_NEW
+            ):
                 continue
 
-            message = event.object["message"]
+            message = (
+                event.object["message"]
+            )
+
             user_id = message["from_id"]
 
-            if user_id < 0:
+            text = (
+                message.get("text", "")
+                .strip()
+            )
+
+            payload = message.get(
+                "payload"
+            )
+
+            if payload:
+
+                handle_payload(
+                    user_id,
+                    json.loads(payload)
+                )
+
                 continue
 
-            text = message.get("text", "")
-            payload = message.get("payload", "")
+            if text.lower() in (
+                "меню",
+                "start",
+                "/start"
+            ):
 
-            print(f"Сообщение от {user_id}: {text!r} payload={payload!r}", flush=True)
+                show_menu(user_id)
 
-            handle_message(user_id, text, payload)
+                continue
 
-        except Exception as e:
-            print(f"Ошибка обработки сообщения: {e}", flush=True)
+            handle_post(
+                user_id,
+                text
+            )
 
+        except Exception:
+
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    while True:
-        try:
-            run_bot()
-        except Exception as e:
-            print(f"Критическая ошибка: {e}", flush=True)
-            time.sleep(10)
+    main()
