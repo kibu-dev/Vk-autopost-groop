@@ -17,72 +17,132 @@ from keyboards import (
 )
 
 from messages import (
-    HELP_TEXT
+    HELP_TEXT,
+    NO_POSTS
 )
 
 
-def main():
+def handle_message(user_id, text):
+
+    text = text.strip().lower()
+
+    if text in [
+        "/start",
+        "start",
+        "меню"
+    ]:
+
+        send_message(
+            user_id,
+            "🏠 Главное меню",
+            main_menu_keyboard()
+        )
+
+        return
+
+    if text in [
+        "/help",
+        "помощь",
+        "❓ помощь"
+    ]:
+
+        send_message(
+            user_id,
+            HELP_TEXT,
+            main_menu_keyboard()
+        )
+
+        return
+
+    if text in [
+        "/stats",
+        "📊 статистика"
+    ]:
+
+        send_message(
+            user_id,
+            (
+                "📊 Статистика\n\n"
+                "Функция находится в разработке"
+            ),
+            main_menu_keyboard()
+        )
+
+        return
+
+    if text in [
+        "/posts",
+        "📝 мои посты"
+    ]:
+
+        send_message(
+            user_id,
+            NO_POSTS,
+            main_menu_keyboard()
+        )
+
+        return
+
+    send_message(
+        user_id,
+        (
+            "🤖 Бот работает.\n\n"
+            "Используйте кнопки меню."
+        ),
+        main_menu_keyboard()
+    )
+
+
+def run_bot():
 
     init_db()
 
-    print("БД инициализирована", flush=True)
+    print(
+        "БД инициализирована",
+        flush=True
+    )
 
     longpoll = VkBotLongPoll(
         community_session,
         GROUP_ID
     )
 
-    print("LongPoll запущен", flush=True)
+    print(
+        "LongPoll запущен",
+        flush=True
+    )
 
     for event in longpoll.listen():
 
-        if event.type != VkBotEventType.MESSAGE_NEW:
-            continue
+        try:
 
-        message = event.object["message"]
+            if event.type != VkBotEventType.MESSAGE_NEW:
+                continue
 
-        user_id = message["from_id"]
+            message = event.object["message"]
 
-        text = (
-            message.get("text", "")
-            .strip()
-            .lower()
-        )
+            user_id = message["from_id"]
 
-        print(
-            f"Сообщение от {user_id}: {text}",
-            flush=True
-        )
-
-        if text in [
-            "/start",
-            "start",
-            "меню"
-        ]:
-
-            send_message(
-                user_id,
-                "Главное меню",
-                main_menu_keyboard()
+            text = message.get(
+                "text",
+                ""
             )
 
-        elif text in [
-            "/help",
-            "помощь"
-        ]:
-
-            send_message(
-                user_id,
-                HELP_TEXT,
-                main_menu_keyboard()
+            print(
+                f"Сообщение от {user_id}: {text}",
+                flush=True
             )
 
-        else:
-
-            send_message(
+            handle_message(
                 user_id,
-                "Бот работает ✅",
-                main_menu_keyboard()
+                text
+            )
+
+        except Exception as e:
+
+            print(
+                f"Ошибка обработки сообщения: {e}",
+                flush=True
             )
 
 
@@ -92,7 +152,7 @@ if __name__ == "__main__":
 
         try:
 
-            main()
+            run_bot()
 
         except Exception as e:
 
