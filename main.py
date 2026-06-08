@@ -1,13 +1,7 @@
-from database import init_db
 import time
 
-def main():
-    init_db()
+print("START OK")
 
-    print("VK AutoPost Bot started")
-
-    while True:
-        time.sleep(60)
-
-if __name__ == "__main__":
-    main()
+while True:
+    print("BOT ALIVE")
+    time.sleep(30)
